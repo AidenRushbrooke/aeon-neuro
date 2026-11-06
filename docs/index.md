@@ -42,11 +42,15 @@ api_reference.md
 ```{toctree}
 :caption: Developing aeon-neuro
 :hidden:
+
+README.md
 ```
 
 ```{toctree}
 :caption: The aeon-neuro team
 :hidden:
+
+contributors.md
 ```
 
 ```{toctree}

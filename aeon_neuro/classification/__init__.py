@@ -10,9 +10,12 @@ wrappers:
 1. Braindecode
     EEGNet
     DeepConvNet (DCN)
-2. pyrieman
+    EEGConformer
+2. pyriemann
 Riemannian-MDM (RMD)
-3. MNE+sckitkit-learn
+3. MNE+scikit-learn
+    CSP+SVM, CSP+LDA (CSPClassifier)
+    xDAWN+LDA (XDAWNClassifier)
 
 
 """
@@ -22,20 +25,26 @@ __all__ = [
     "MultiRocketHydraClassifier",
     "InceptionTimeClassifier",
     "DeepConvNetClassifier",
+    "EEGConformerClassifier",
     "EEGNetClassifier",
     "RiemannianMDMClassifier",
     "RiemannianKNNClassifier",
+    "TimeCNNClassifier",
+    "CSPClassifier",
+    "XDAWNClassifier",
 ]
 
 from aeon.classification.convolution_based import MultiRocketHydraClassifier
-from aeon.classification.deep_learning import InceptionTimeClassifier
+from aeon.classification.deep_learning import InceptionTimeClassifier, TimeCNNClassifier
 from aeon.classification.hybrid import HIVECOTEV2
 
 from aeon_neuro.classification.deep_learning import (
     DeepConvNetClassifier,
+    EEGConformerClassifier,
     EEGNetClassifier,
 )
 from aeon_neuro.classification.distance_based import (
     RiemannianKNNClassifier,
     RiemannianMDMClassifier,
 )
+from aeon_neuro.classification.feature_based import CSPClassifier, XDAWNClassifier

@@ -47,7 +47,7 @@ Please go through the checklist below. Please feel free to remove points if they
 -->
 
 ##### For all contributions
-- [ ] I've added myself to the [list of contributors](https://github.com/aeon-toolkit/aeon-neuro/blob/main/.all-contributorsrc). Alternatively, you can use the [@all-contributors](https://allcontributors.org/docs/en/bot/usage) bot to do this for you.
+- [ ] I've added myself to the [list of contributors](https://github.com/aeon-toolkit/aeon-neuro/blob/main/.all-contributorsrc). Alternatively, you can use the [@all-contributors](https://allcontributors.org/docs/en/bot/usage) bot to do this for you **after** the PR has been merged.
 - [ ] The PR title starts with either [ENH], [MNT], [DOC], [BUG], [REF], [DEP] or [GOV] indicating whether the PR topic is related to enhancement, maintenance, documentation, bugs, refactoring, deprecation or governance.
 
 ##### For new estimators and functions
@@ -56,6 +56,9 @@ Please go through the checklist below. Please feel free to remove points if they
 ##### For developers with write access
 - [ ] Optionally, I've updated aeon-neuro's [CODEOWNERS](https://github.com/aeon-toolkit/aeon-neuro/blob/main/CODEOWNERS) to receive notifications about future changes to these files.
 
+##### Support aeon-neuro
+
+If you find aeon useful, please consider starring the repository. Stars help others discover the project and support our open-source community.
 
 <!--
 Thanks for contributing!

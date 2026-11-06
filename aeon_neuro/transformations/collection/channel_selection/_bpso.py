@@ -2,32 +2,37 @@
 
 from __future__ import annotations
 
+from math import ceil
+
 import numpy as np
 from aeon.transformations.collection.channel_selection.base import BaseChannelSelector
+from sklearn.base import clone
 from sklearn.metrics import accuracy_score
-import random
 from sklearn.model_selection import train_test_split
+from sklearn.utils import check_random_state
 
 __all__ = ["BPSO"]
 
 
 class BPSO(BaseChannelSelector):
-    """Channel selector based on binary particle swarm optimisation.
+    """Select a fixed-size channel subset using binary particle swarm optimisation.
 
-    Placeholder implementation for a wrapper-style channel selector that
-    will use binary particle swarm optimisation to search for an
-    informative subset of channels.
+    Candidate subsets are scored on a single stratified train-validation split.
+    Each particle is constrained to retain ``ceil(proportion * n_channels)``
+    channels.
 
     Parameters
     ----------
     proportion : float, default=0.25
-        Proportion of channels to retain.
+        Proportion of channels to retain, rounded up to the nearest channel.
     n_particles : int, default=30
         Number of particles in the swarm.
     max_iter : int, default=50
-        Maximum number of optimisation iterations.
+        Number of optimisation iterations.
     estimator : object or None, default=None
-        Estimator used to evaluate candidate channel subsets.
+        Cloneable classifier used to evaluate candidate channel subsets. It must
+        implement ``fit`` and ``predict`` and accept 3D time-series collections.
+        If None, an ``aeon`` MiniRocketClassifier is used.
     inertia : float, default=0.729
         Inertia weight used in particle velocity updates.
     cognitive : float, default=1.49445
@@ -35,11 +40,14 @@ class BPSO(BaseChannelSelector):
     social : float, default=1.49445
         Social coefficient used in particle velocity updates.
     random_state : int or None, default=None
-        Random seed for reproducibility.
+        Random seed used for swarm initialisation, updates, and data splitting.
 
-    Notes
-    -----
-    This class is currently a placeholder and is not implemented.
+    Attributes
+    ----------
+    channels_selected_ : list of int
+        Indices of the selected channels.
+    best_score_ : float
+        Validation accuracy of the selected subset.
     """
 
     _tags = {
@@ -78,85 +86,248 @@ class BPSO(BaseChannelSelector):
         Parameters
         ----------
         X : np.ndarray of shape (n_cases, n_channels, n_timepoints)
-            Input time series collection.
-        y : np.ndarray of shape (n_cases,), default=None
-            Class labels.
+            Training time series.
+        y : np.ndarray of shape (n_cases,)
+            Class labels. Each class must contain enough cases for a stratified
+            50 percent validation split.
 
         Returns
         -------
-        self : BPSOChannelSelector
-            Reference to self.
+        self
+            Fitted channel selector.
+        """
+        self._validate_parameters()
+        rng = check_random_state(self.random_state)
+        n_channels = X.shape[1]
+        n_selected = ceil(self.proportion * n_channels)
+
+        train_indices, validation_indices = train_test_split(
+            np.arange(X.shape[0]),
+            test_size=0.5,
+            random_state=self.random_state,
+            stratify=y,
+        )
+        particles = self._initialise_particles(
+            rng, self.n_particles, n_channels, n_selected
+        )
+        velocities = rng.uniform(-1.0, 1.0, size=particles.shape)
+        personal_best_positions = particles.copy()
+        personal_best_scores = np.full(self.n_particles, -np.inf)
+        global_best_position = particles[0].copy()
+        global_best_score = -np.inf
+        score_cache = {}
+
+        for _ in range(self.max_iter):
+            for particle_index, particle in enumerate(particles):
+                key = tuple(particle)
+                if key not in score_cache:
+                    score_cache[key] = self._score_particle(
+                        X,
+                        y,
+                        particle,
+                        train_indices,
+                        validation_indices,
+                    )
+                score = score_cache[key]
+
+                if score > personal_best_scores[particle_index]:
+                    personal_best_scores[particle_index] = score
+                    personal_best_positions[particle_index] = particle.copy()
+
+                if score > global_best_score:
+                    global_best_score = score
+                    global_best_position = particle.copy()
+
+            random_cognitive = rng.random_sample(particles.shape)
+            random_social = rng.random_sample(particles.shape)
+            velocities = (
+                self.inertia * velocities
+                + self.cognitive
+                * random_cognitive
+                * (personal_best_positions - particles)
+                + self.social * random_social * (global_best_position - particles)
+            )
+            probabilities = self._sigmoid(velocities)
+            particles = self._sample_particles(probabilities, rng, n_selected)
+
+        self.channels_selected_ = np.flatnonzero(global_best_position).tolist()
+        self.best_score_ = float(global_best_score)
+        return self
+
+    def _score_particle(
+        self,
+        X,
+        y,
+        particle,
+        train_indices,
+        validation_indices,
+    ):
+        """Return the validation accuracy for one candidate subset.
+
+        Parameters
+        ----------
+        X : np.ndarray of shape (n_cases, n_channels, n_timepoints)
+            Training time series.
+        y : np.ndarray of shape (n_cases,)
+            Class labels.
+        particle : np.ndarray of shape (n_channels,)
+            Binary channel-selection mask.
+        train_indices : np.ndarray of shape (n_train_cases,)
+            Indices used to fit the candidate estimator.
+        validation_indices : np.ndarray of shape (n_validation_cases,)
+            Indices used to score the candidate estimator.
+
+        Returns
+        -------
+        float
+            Classification accuracy on the validation cases.
+        """
+        estimator = clone(self._get_estimator())
+        selected = np.flatnonzero(particle)
+        estimator.fit(X[train_indices][:, selected], y[train_indices])
+        predictions = estimator.predict(X[validation_indices][:, selected])
+        return float(accuracy_score(y[validation_indices], predictions))
+
+    def _get_estimator(self):
+        """Return the configured estimator or construct the default.
+
+        Returns
+        -------
+        estimator
+            Unfitted classifier used to evaluate channel subsets.
+        """
+        if self.estimator is not None:
+            return self.estimator
+
+        from aeon.classification.convolution_based import MiniRocketClassifier
+
+        return MiniRocketClassifier(random_state=self.random_state)
+
+    def _validate_parameters(self):
+        """Validate constructor parameters.
 
         Raises
         ------
-        NotImplementedError
-            Always, since this is a placeholder.
+        ValueError
+            If the proportion, swarm size, iteration count, or particle update
+            coefficients are outside their supported ranges.
         """
+        if not 0 < self.proportion <= 1:
+            raise ValueError("proportion must be in the interval (0, 1].")
+        if not isinstance(self.n_particles, int) or self.n_particles < 1:
+            raise ValueError("n_particles must be a positive integer.")
+        if not isinstance(self.max_iter, int) or self.max_iter < 1:
+            raise ValueError("max_iter must be a positive integer.")
+        if self.inertia < 0 or self.cognitive < 0 or self.social < 0:
+            raise ValueError(
+                "inertia, cognitive, and social must be greater than or equal to 0."
+            )
 
-        n_channels = X.shape[1]  
-        particles = np.random.randint(2, size=(self.n_particles, n_channels))
-        velocities = np.random.rand(self.n_particles, n_channels) 
-        pbest_positions = particles.copy()
-        pbest_scores = np.zeros(self.n_particles)  
-        gbest_position = None 
-        gbest_score = -float('inf')  
-        for iteration in range(self.max_iter):
-            for i in range( self.n_particles):
+    @staticmethod
+    def _initialise_particles(rng, n_particles, n_channels, n_selected):
+        """Create random particles with the required number of channels.
 
-                fitness = self.fitness_function(X, y, particles[i])
-                
-                if fitness > pbest_scores[i]:
-                    pbest_scores[i] = fitness
-                    pbest_positions[i] = particles[i].copy()
-                
+        Parameters
+        ----------
+        rng : np.random.RandomState
+            Random number generator.
+        n_particles : int
+            Number of particles to create.
+        n_channels : int
+            Number of binary positions in each particle.
+        n_selected : int
+            Number of positions set to one in each particle.
 
-                if fitness > gbest_score:
-                    gbest_score = fitness
-                    gbest_position = particles[i].copy()
+        Returns
+        -------
+        np.ndarray of shape (n_particles, n_channels)
+            Initial binary particle positions.
+        """
+        particles = np.zeros((n_particles, n_channels), dtype=np.int8)
+        for particle in particles:
+            particle[rng.choice(n_channels, size=n_selected, replace=False)] = 1
+        return particles
 
-            for i in range(self.n_particles):
-                r1, r2 = random.random(), random.random()
-                velocities[i] = (self.inertia * velocities[i]
-                                + self.cognitive * r1 * (pbest_positions[i] - particles[i])
-                                + self.social * r2 * (gbest_position - particles[i]))
-                
+    @staticmethod
+    def _sample_particles(probabilities, rng, n_selected):
+        """Sample binary positions and enforce the required subset size.
 
-                sigmoid = 1 / (1 + np.exp(-velocities[i]))
-                particles[i] = np.where(sigmoid > 0.5, 1, 0)  
-        self.channels_selected_=list(gbest_position)
-        return self
+        Positions are first sampled independently from their probabilities.
+        Excess selected positions with the lowest probabilities are cleared, or
+        unselected positions with the highest probabilities are added, until
+        each particle contains exactly ``n_selected`` channels.
 
-    def fitness_function(self,X, y, selected_channels):
-        from aeon.classification.convolution_based import MiniRocketClassifier
-        classifier = MiniRocketClassifier()
-        X_selected = X[:, self.pick_channels_id(selected_channels)]
-        X_train, X_test, y_train, y_test = train_test_split(X_selected, y, test_size=0.50, random_state=23)
-        classifier.fit(X_train, y_train)
-        y_pred = classifier.predict(X_test)
-        
-        accuracy = accuracy_score(y_test, y_pred)
-        num_selected_channels = sum(selected_channels)
-        fitness = accuracy - 0.01 * num_selected_channels
-        return fitness
-    
-    def pick_channels_id(self,ids):
-        c = []
-        for i in range(len(ids)):
-            if ids[i]:
-                c.append(i)
-        return c
+        Parameters
+        ----------
+        probabilities : np.ndarray of shape (n_particles, n_channels)
+            Probability of selecting each channel in each particle.
+        rng : np.random.RandomState
+            Random number generator.
+        n_selected : int
+            Required number of selected channels per particle.
 
+        Returns
+        -------
+        np.ndarray of shape (n_particles, n_channels)
+            Sampled binary particle positions.
+        """
+        particles = (rng.random_sample(probabilities.shape) < probabilities).astype(
+            np.int8
+        )
+        for particle, particle_probabilities in zip(particles, probabilities):
+            selected = np.flatnonzero(particle)
+            if len(selected) > n_selected:
+                n_to_clear = len(selected) - n_selected
+                to_clear = selected[
+                    np.argsort(particle_probabilities[selected])[:n_to_clear]
+                ]
+                particle[to_clear] = 0
+            elif len(selected) < n_selected:
+                unselected = np.flatnonzero(particle == 0)
+                to_set = unselected[
+                    np.argsort(particle_probabilities[unselected])[
+                        -(n_selected - len(selected)) :
+                    ]
+                ]
+                particle[to_set] = 1
+        return particles
 
+    @staticmethod
+    def _sigmoid(values):
+        """Apply a numerically stable sigmoid transform.
+
+        Parameters
+        ----------
+        values : np.ndarray
+            Particle velocities.
+
+        Returns
+        -------
+        np.ndarray
+            Selection probabilities with the same shape as ``values``.
+        """
+        return 1.0 / (1.0 + np.exp(-np.clip(values, -709, 709)))
 
     @classmethod
-    def get_test_params(cls, parameter_set="default"):
-        """Return testing parameter settings for the estimator."""
-        return [
-            {},
-            {
-                "proportion": 0.5,
-                "n_particles": 10,
-                "max_iter": 5,
-                "random_state": 0,
-            },
-        ]
+    def _get_test_params(cls, parameter_set="default"):
+        """Return a lightweight parameter set for estimator tests.
+
+        Parameters
+        ----------
+        parameter_set : str, default="default"
+            Name of the test parameter set. Currently ignored.
+
+        Returns
+        -------
+        dict
+            Parameters that avoid fitting the default MiniRocketClassifier.
+        """
+        from aeon.classification import DummyClassifier
+
+        return {
+            "proportion": 0.5,
+            "n_particles": 2,
+            "max_iter": 1,
+            "estimator": DummyClassifier(),
+            "random_state": 0,
+        }
